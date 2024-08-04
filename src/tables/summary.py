@@ -42,6 +42,8 @@ def get_recent_daily_values(values):
 
     return day_before_yesterday, yesterday, today
 
+def convert_minutes_to_hours(minutes):
+    return round(minutes / 60, 1)
 
 def make_forecast_horizon_table(all_forecast_horizons_df, y_plive_mae):
     st.subheader("Data - forecast horizon averaged")
@@ -52,6 +54,8 @@ def make_forecast_horizon_table(all_forecast_horizons_df, y_plive_mae):
     df_mae_horizon_mean.rename(columns={"MAE": "mean"}, inplace=True)
     df_mae_horizon_std = all_forecast_horizons_df.groupby(["forecast_horizon"]).std().reset_index()
     df_mae_horizon_mean["std"] = df_mae_horizon_std["MAE"]
+    # Convert forecast_horizon from minutes to hours
+    df_mae_horizon_mean["forecast_horizon"] = df_mae_horizon_mean["forecast_horizon"].apply(convert_minutes_to_hours)
     pv_live_mae = np.round(np.mean(y_plive_mae), 2)
     st.write(f"PV LIVE Mae {pv_live_mae} MW (intraday - day after)")
     st.write(df_mae_horizon_mean)

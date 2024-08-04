@@ -3,6 +3,9 @@ from plotly import graph_objects as go
 
 from plots.utils import line_color, get_x_y, MAE_LIMIT_DEFAULT
 
+def convert_minutes_to_hours(minutes):
+    return round(minutes / 60, 1)
+
 
 def make_mae_by_forecast_horizon(
     df_mae, forecast_horizon_selection, metric_values_by_forecast_horizon
@@ -39,12 +42,14 @@ def make_mae_by_forecast_horizon(
             }
         )
 
+        forecast_horizon_hours = convert_minutes_to_hours(forecast_horizon)
+
         fig2.add_traces(
             [
                 go.Scatter(
                     x=df["datetime_utc"],
                     y=df["MAE"],
-                    name=f"{forecast_horizon}-minute horizon",
+                    name=f"{forecast_horizon_hours}-hour horizon",
                     mode="lines",
                     line=dict(color=line_color[i%len(line_color)]),
                 )
@@ -64,7 +69,7 @@ def make_mae_forecast_horizon_group_by_forecast_horizon(
                 text="Quartz Solar MAE by Forecast Horizon for Date Range(selected in sidebar)"
             ),
             xaxis=go.layout.XAxis(title=go.layout.xaxis.Title(text="MAE (MW)")),
-            yaxis=go.layout.YAxis(title=go.layout.yaxis.Title(text="Forecast Horizon (minutes)")),
+            yaxis=go.layout.YAxis(title=go.layout.yaxis.Title(text="Forecast Horizon (hours)")),
         )
     )
     for i, forecast_horizon in enumerate(forecast_horizon_selection):
@@ -72,11 +77,13 @@ def make_mae_forecast_horizon_group_by_forecast_horizon(
         x_mae_horizon = [value.datetime_interval.start_datetime_utc for value in metric_values]
         y_mae_horizon = [round(float(value.value), 2) for value in metric_values]
 
+        forecast_horizon_hours = convert_minutes_to_hours(forecast_horizon)
+
         df_mae_horizon = pd.DataFrame(
             {
                 "MAE": y_mae_horizon,
                 "datetime_utc": x_mae_horizon,
-                "forecast_horizon": forecast_horizon,
+                "forecast_horizon": forecast_horizon_hours,
             }
         )
 
@@ -85,7 +92,7 @@ def make_mae_forecast_horizon_group_by_forecast_horizon(
                 go.Scatter(
                     x=df_mae_horizon["MAE"],
                     y=df_mae_horizon["forecast_horizon"],
-                    name=f"{forecast_horizon}-minute horizon",
+                    name=f"{forecast_horizon_hours}-hour horizon",
                     mode="markers",
                     line=dict(color=line_color[i%len(line_color)]),
                 ),
@@ -93,10 +100,11 @@ def make_mae_forecast_horizon_group_by_forecast_horizon(
         )
         fig.update_layout(
             xaxis=dict(tickmode="linear", tick0=0, dtick=50),
-            yaxis=dict(tickmode="linear", tick0=0, dtick=60),
+            yaxis=dict(tickmode="linear", tick0=0, dtick=1),
         )
         fig.update_layout(xaxis_range=[0, MAE_LIMIT_DEFAULT])
     return fig
+
 
 
 def make_mae_vs_forecast_horizon_group_by_date(
@@ -109,7 +117,7 @@ def make_mae_vs_forecast_horizon_group_by_date(
     fig = go.Figure(
         layout=go.Layout(
             title=go.layout.Title(text="Quartz Solar MAE Forecast Horizon Values by Date"),
-            xaxis=go.layout.XAxis(title=go.layout.xaxis.Title(text="Forecast Horizon (minutes)")),
+            xaxis=go.layout.XAxis(title=go.layout.xaxis.Title(text="Forecast Horizon (hours)")),
             yaxis=go.layout.YAxis(title=go.layout.yaxis.Title(text="MAE (MW)")),
             legend=go.layout.Legend(title=go.layout.legend.Title(text="Date")),
         )
@@ -124,7 +132,7 @@ def make_mae_vs_forecast_horizon_group_by_date(
         metric_values = metric_values_by_forecast_horizon[forecast_horizon]
         dates = [value.datetime_interval.start_datetime_utc for value in metric_values]
         mae_value = [round(float(value.value), 2) for value in metric_values]
-        forecast_horizons = [value.forecast_horizon_minutes for value in metric_values]
+        forecast_horizons = [convert_minutes_to_hours(value.forecast_horizon_minutes) for value in metric_values]
 
         # create dataframe for each date with a value for each forecast horizon
         data = pd.DataFrame(
@@ -160,8 +168,9 @@ def make_mae_vs_forecast_horizon_group_by_date(
         )
     fig.add_traces(traces)
     fig.update_layout(
-        xaxis=dict(tickmode="linear", tick0=0, dtick=60),
+        xaxis=dict(tickmode="linear", tick0=0, dtick=1),
         yaxis=dict(tickmode="linear", tick0=0, dtick=50),
     )
     fig.update_layout(yaxis_range=[0, MAE_LIMIT_DEFAULT])
     return all_forecast_horizons_df, fig
+
