@@ -1,7 +1,7 @@
 import os
 from datetime import datetime, timedelta, time, timezone
 import numpy as np
-
+import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from nowcasting_datamodel.connection import DatabaseConnection
@@ -16,7 +16,9 @@ from nowcasting_datamodel.read.read_gsp import get_gsp_yield, get_gsp_yield_sum
 from plots.utils import (
     get_colour_from_model_name, model_is_probabilistic, get_recent_available_model_names
 )
-
+from datetime import datetime, timedelta, time
+from elexonpy.api_client import ApiClient
+from elexonpy.api.generation_forecast_api import GenerationForecastApi
 
 class GSPLabeler:
     """A function class to add the GSP name to the GSP IDs"""
@@ -29,79 +31,67 @@ class GSPLabeler:
         """Get GSP label"""
         i = self.gsp_ids.index(gsp_id)
         return f"{gsp_id}: {self.gsp_names[i]}"
-    
+
 
 def forecast_page():
     """Main page for status"""
-
     st.markdown(
         f'<h1 style="color:#63BCAF;font-size:48px;">{"National and GSP Forecasts"}</h1>',
         unsafe_allow_html=True,
     )
-    
+
     st.sidebar.subheader("Select Forecast Model")
-    
+
     connection = DatabaseConnection(url=os.environ["DB_URL"], echo=True)
     with connection.get_session() as session:
-                
-        # Add dropdown to select GSP region
         locations = get_all_locations(session=session)
         locations = [Location.from_orm(loc) for loc in locations if loc.gsp_id < 318]
         gsp_ids = [loc.gsp_id for loc in locations]
         gsp_names = [loc.region_name for loc in locations]
-        
+
         gsp_labeler = GSPLabeler(gsp_ids, gsp_names)
-        
+
         gsp_id = st.sidebar.selectbox(
-            "Select a region", 
-            gsp_ids, 
-            index=0, 
+            "Select a region",
+            gsp_ids,
+            index=0,
             format_func=gsp_labeler
         )
-        
-        # Get effective capacity of selected GSP
+
         capacity_mw = locations[gsp_ids.index(gsp_id)].installed_capacity_mw
-        
-        # Find recent available models
+
         available_models = get_recent_available_model_names(session)
-            
-        # Add selection for models
+
         selected_models = st.sidebar.multiselect("Select models", available_models, ["pvnet_v2"])
 
-        # If any selected models are probabilistic add checkbox to show quantiles
         selected_prob_models = [model for model in selected_models if model_is_probabilistic(model)]
-        
-        if len(selected_prob_models)>0:
+
+        if len(selected_prob_models) > 0:
             show_prob = st.sidebar.checkbox("Show Probabilities Forecast", value=False)
         else:
             show_prob = False
-        
-        if gsp_id!=0 and ("National_xg" in selected_models):
+
+        if gsp_id != 0 and ("National_xg" in selected_models):
             selected_models.remove("National_xg")
             st.sidebar.warning("National_xg only available for National forecast.")
-        
-        # Add selection for adjuster
+
         use_adjuster = st.sidebar.radio("Use adjuster", [True, False], index=1)
 
-        # Add selection for forecast type
         forecast_type = st.sidebar.radio(
             "Forecast Type", ["Now", "Creation Time", "Forecast Horizon"], index=0
         )
-        
+
         now = datetime.now()
         today = now.date()
         yesterday = today - timedelta(days=1)
-        
+
         if forecast_type == "Now":
             start_datetimes = [today - timedelta(days=2)]
             end_datetimes = [None]
-        
+
         elif forecast_type == "Creation Time":
-            # Add calendar to select start date - defaults to yesterday
-            
+
             date_sel = st.sidebar.date_input("Forecast creation date:", yesterday)
-            
-            # Add dropdown selection of init-times
             dt_sel = datetime.combine(date_sel, time(0, 0))
             initial_times = [dt_sel - timedelta(days=1) + timedelta(hours=3 * i) for i in range(8)]
             initial_times += [dt_sel + timedelta(minutes=30 * i) for i in range(48)]
@@ -111,34 +101,29 @@ def forecast_page():
                 initial_times,
                 [initial_times[x] for x in [14, 20, 26, 32, 38]],
             )
-            
+
             select_init_times = sorted(select_init_times)
 
             start_datetimes = select_init_times
             end_datetimes = [t + timedelta(days=2) for t in select_init_times]
 
         elif forecast_type == "Forecast Horizon":
-            # Add calendar and time selections for datetime
             date_sel = st.sidebar.date_input("Forecast start date:", yesterday)
             time_sel = st.sidebar.time_input("Forecast start time", time(0, 0))
-            
+
             dt_sel = datetime.combine(date_sel, time_sel)
             start_datetimes = [dt_sel]
             end_datetimes = [dt_sel + timedelta(days=2)]
 
-            # Add selection for horizon
-            # 0-8 hours in 30 mintue chunks, 8-36 hours in 3 hour chunks
             forecast_horizon = st.sidebar.selectbox(
                 "Forecast Horizon (mins)",
                 list(range(0, 480, 30)) + list(range(480, 36 * 60, 180)),
                 0,
             )
 
-        # Get the data to plot
         forecast_per_model = {}
         for model in selected_models:
             for start_dt, end_dt in zip(start_datetimes, end_datetimes):
-
                 if forecast_type == "Now":
                     forecast_values = get_forecast_values_latest(
                         session=session,
@@ -147,7 +132,7 @@ def forecast_page():
                         start_datetime=start_dt,
                     )
                     label = model
-                
+
                 elif forecast_type == "Creation Time":
                     forecast_values = get_forecast_values(
                         session=session,
@@ -158,7 +143,7 @@ def forecast_page():
                         only_return_latest=True,
                     )
                     label = f"{model} {start_dt}"
-                
+
                 elif forecast_type == "Forecast Horizon":
                     forecast_values = get_forecast_values(
                         session=session,
@@ -171,7 +156,6 @@ def forecast_page():
                     )
                     label = model
 
-                # Make ForecastValue objects with _properties attribute and maybe adjust
                 forecast_per_model[label] = []
                 for f in forecast_values:
                     forecast_value = ForecastValue.from_orm(f)
@@ -180,13 +164,10 @@ def forecast_page():
                         forecast_value = forecast_value.adjust(limit=1000)
                     forecast_per_model[label].append(forecast_value)
 
-
-        # Get pvlive values
         pvlive_data, pvlive_gsp_sum_dayafter, pvlive_gsp_sum_inday = get_pvlive_data(
             end_datetimes[0], gsp_id, session, start_datetimes[0]
         )
 
-    # Make figure
     fig = go.Figure(
         layout=go.Layout(
             title=go.layout.Title(text="Latest Forecast"),
@@ -195,13 +176,11 @@ def forecast_page():
             legend=go.layout.Legend(title=go.layout.legend.Title(text="Chart Legend")),
         )
     )
-    
-    # Plot PVLive values and the forecasts
+
     plot_pvlive(fig, gsp_id, pvlive_data, pvlive_gsp_sum_dayafter, pvlive_gsp_sum_inday)
     plot_forecasts(fig, forecast_per_model, selected_prob_models, show_prob)
 
     if end_datetimes[0] is None or now <= max(end_datetimes):
-        # Add vertical line to indicate now
         fig.add_trace(
             go.Scatter(
                 x=[now, now],
@@ -215,6 +194,86 @@ def forecast_page():
 
     st.plotly_chart(fig, theme="streamlit")
 
+    # Elexon Solar Forecast
+    st.title("Elexon Solar Forecast")
+    st.sidebar.subheader("Select Elexon Forecast Dates")
+    start_datetime_utc = st.sidebar.date_input("Start Date", datetime.utcnow() - timedelta(days=3))
+    end_datetime_utc = st.sidebar.date_input("End Date", datetime.utcnow() + timedelta(days=3))
+
+    if start_datetime_utc < end_datetime_utc:
+        # Fetch data for each process type
+        process_types = ["Day Ahead", "Intraday Process", "Intraday Total"]
+        colors = ["red", "blue", "green"]  # Colors for each process type
+        forecasts = [fetch_forecast_data(forecast_generation_wind_and_solar_day_ahead_get, start_datetime_utc, end_datetime_utc, pt) for pt in process_types]
+
+        fig = go.Figure()
+        for i, (forecast, color) in enumerate(zip(forecasts, colors)):
+            if forecast.empty:
+                st.write(f"No data available for process type: {process_types[i]}")
+                continue
+
+            # Remove NaNs and zero values
+            forecast = forecast[forecast["quantity"].notna() & (forecast["quantity"] > 0)]
+
+            full_time_range = pd.date_range(start=start_datetime_utc, end=end_datetime_utc, freq='30T', tz=forecast["start_time"].dt.tz)
+            full_time_df = pd.DataFrame(full_time_range, columns=['start_time'])
+
+            forecast = full_time_df.merge(forecast, on='start_time', how='left')
+
+            fig.add_trace(go.Scatter(
+                x=forecast["start_time"],
+                y=forecast["quantity"],
+                mode='lines',
+                name=process_types[i],
+                line=dict(color=color),
+                connectgaps=False
+            ))
+
+        fig.update_layout(
+            title="Elexon Solar Forecast",
+            xaxis_title="Date and Time",
+            yaxis_title="Forecast (MW)",
+            xaxis=dict(
+                tickformat='%Y-%m-%d %H:%M',
+                tickangle=45
+            ),
+            legend_title="Process Type"
+        )
+
+        st.plotly_chart(fig)
+
+# Function to fetch and process data
+def fetch_forecast_data(api_func, start_date, end_date, process_type):
+    try:
+        response = api_func(
+            _from=start_date.isoformat(),
+            to=end_date.isoformat(),
+            process_type=process_type,
+            format="json",
+        )
+        if not response.data:
+            return pd.DataFrame()
+
+        df = pd.DataFrame([item.to_dict() for item in response.data])
+        solar_df = df[df["business_type"] == "Solar generation"]
+        solar_df["start_time"] = pd.to_datetime(solar_df["start_time"])
+        solar_df = solar_df.set_index("start_time")
+
+        # Only resample if there's data
+        if not solar_df.empty:
+            solar_df = solar_df.resample("30T")["quantity"].sum().reset_index()
+
+        return solar_df
+    except Exception as e:
+        st.error(f"Error fetching data for process type '{process_type}': {e}")
+        return pd.DataFrame()
+
+# Initialize Elexon API client
+api_client = ApiClient()
+forecast_api = GenerationForecastApi(api_client)
+forecast_generation_wind_and_solar_day_ahead_get = (
+    forecast_api.forecast_generation_wind_and_solar_day_ahead_get
+)
 
 def plot_pvlive(fig, gsp_id, pvlive_data, pvlive_gsp_sum_dayafter, pvlive_gsp_sum_inday):
     # pvlive on the chart
@@ -227,7 +286,7 @@ def plot_pvlive(fig, gsp_id, pvlive_data, pvlive_gsp_sum_dayafter, pvlive_gsp_su
             line["dash"] = "dash"
 
         fig.add_trace(go.Scatter(x=x, y=y, mode="lines", name=k, line=line))
-    
+
     # pvlive gsp sum dictionary of values and chart for national forecast
     if gsp_id == 0:
         pvlive_gsp_sum_data = {}
@@ -241,7 +300,7 @@ def plot_pvlive(fig, gsp_id, pvlive_data, pvlive_gsp_sum_dayafter, pvlive_gsp_su
         for k, v in pvlive_gsp_sum_data.items():
             x = [i.datetime_utc for i in v]
             y = [i.solar_generation_kw / 1000 for i in v]
-                
+
             line = {"color": get_colour_from_model_name(k)}
             if k == "PVLive GSP Sum Estimate":
                 line["dash"] = "dash"
@@ -273,7 +332,7 @@ def plot_forecasts(fig, forecast_per_model, selected_prob_models, show_prob):
                 y=y,
                 mode="lines",
                 name=model,
-                line=dict(color=get_colour_from_model_name(model)), 
+                line=dict(color=get_colour_from_model_name(model)),
                 opacity=opacity,
                 hovertemplate="<br>%{x}<br>" + "<b>%{y:.2f}</b>MW",
                 legendgroup=model,
@@ -300,7 +359,7 @@ def plot_forecasts(fig, forecast_per_model, selected_prob_models, show_prob):
                             showlegend=False,
                         )
                     )
-                    
+
                     fig.add_trace(
                         go.Scatter(
                             x=x,
@@ -313,8 +372,8 @@ def plot_forecasts(fig, forecast_per_model, selected_prob_models, show_prob):
                             showlegend=False,
                         )
                     )
-                    
-                    
+
+
             except Exception as e:
                 print(e)
                 print("Could not add plevel to chart")
